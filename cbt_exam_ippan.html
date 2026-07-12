@@ -244,6 +244,20 @@
 
   .hidden{ display:none !important; }
   footer.credit{ text-align:center; font-size:11.5px; color:#9aa1ac; padding:18px 0 26px; }
+
+  /* ===== Startup password ===== */
+  .login-card{ max-width:440px; }
+  .pw-input{
+    width:100%; padding:13px 16px; font-size:16px; border:1.5px solid var(--line);
+    border-radius:6px; margin-bottom:12px; font-family:inherit; background:#fbfbfc;
+  }
+  .pw-input:focus{ outline:none; border-color:var(--navy); background:#fff; }
+  .pw-error{ color:var(--red); font-size:13px; margin:-4px 0 12px; font-weight:600; }
+
+  /* ===== Practice mode (10問ずつ) ===== */
+  .mode-btns{ display:flex; flex-direction:column; gap:10px; }
+  .result-banner.neutral{ background:#eef2f8; border:1.5px solid #c7d4e5; }
+  .result-banner.neutral .result-score{ color:var(--navy); }
 </style>
 </head>
 <body>
@@ -256,6 +270,8 @@ const PASS_RATIO = 0.9; // 90%
 
 const STORAGE_KEY = 'cbt_ippan_progress_v1';
 const RESULT_KEY = 'cbt_ippan_results_v1';
+const PRACTICE_KEY = 'cbt_ippan_practice_v1';
+const BLOCK_SIZE = 10; // 演習モードは10問ごとに採点
 
 // localStorageが使えない環境（file://プロトコル、プライベートブラウジング、
 // 一部のアプリ内ブラウザ等）でもアプリ自体は止まらないよう、
@@ -310,11 +326,57 @@ function fmtTime(sec){
   return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
 }
 
+// ============ STARTUP PASSWORD GATE ============
+// 注意: 静的アプリのためチェックはクライアント側のみ（簡易的なアクセス制限）。
+const APP_PASSWORD = 'Cbttest1';
+const AUTH_KEY = 'cbt_ippan_auth_v1';
+
+// 認証状態はsessionStorageに保持する（タブ／アプリを閉じると再入力）。
+function isAuthed(){
+  try{ return sessionStorage.getItem(AUTH_KEY) === '1'; }catch(e){ return false; }
+}
+function setAuthed(){
+  try{ sessionStorage.setItem(AUTH_KEY, '1'); }catch(e){ /* 保存不可なら起動ごとに入力 */ }
+}
+
+function renderLogin(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="start-wrap">
+      <div class="start-card login-card">
+        <div class="start-eyebrow">Prometric CBT 形式 演習</div>
+        <h1>一等無人航空機操縦士 学科試験</h1>
+        <p class="sub">このアプリを利用するにはパスワードを入力してください。</p>
+        <input type="password" id="pwInput" class="pw-input" placeholder="パスワード" autocomplete="current-password">
+        <div class="pw-error hidden" id="pwError">パスワードが違います。</div>
+        <button class="btn btn-primary btn-block btn-lg" id="pwBtn">ログイン</button>
+      </div>
+    </div>
+    <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
+  `;
+  const input = document.getElementById('pwInput');
+  const error = document.getElementById('pwError');
+  function submit(){
+    if(input.value === APP_PASSWORD){
+      setAuthed();
+      renderStart();
+    } else {
+      error.classList.remove('hidden');
+      input.value = '';
+      input.focus();
+    }
+  }
+  document.getElementById('pwBtn').addEventListener('click', submit);
+  input.addEventListener('keydown', e=>{ if(e.key === 'Enter') submit(); });
+  input.focus();
+}
+
 // ============ RENDER: START SCREEN ============
 function renderStart(){
   stopTimer();
   const results = loadResults();
   const progress = loadProgress();
+  const practice = loadPractice();
   const app = document.getElementById('app');
   const rounds = Object.keys(QUESTION_BANK).sort((a,b)=>a-b);
 
@@ -329,6 +391,10 @@ function renderStart(){
       const label = res.passed ? '合格' : '不合格';
       statusHtml = `<div class="rstatus ${cls}">${label}（${res.correct}/${res.total}）</div>`;
     }
+    const pr = practice[r];
+    if(pr && !pr.finished){
+      statusHtml += '<div class="rstatus resume">演習 再開可能</div>';
+    }
     return `
       <div class="round-btn" data-round="${r}">
         <div class="rnum">第${r}回</div>
@@ -342,13 +408,16 @@ function renderStart(){
       <div class="start-card">
         <div class="start-eyebrow">Prometric CBT 形式 演習</div>
         <h1>一等無人航空機操縦士 学科試験</h1>
-        <p class="sub">受験する回を選んでください。各回70問・制限時間75分。合格基準は正答率90%（63問以上）です。</p>
+        <p class="sub">受験する回を選んでください。本試験モードは各回70問・制限時間75分、合格基準は正答率90%（63問以上）です。演習モードでは10問解くごとに採点と見直しができます。</p>
         <div class="round-grid">${cardsHtml}</div>
         <div class="rules">
           <b>操作方法：</b> 選択肢をクリックして解答／画面右上の「フラグ」ボタンで見直し対象として印を付けられます／右側（またはスマホでは下部）の問題ナビゲータから任意の問題へジャンプできます。<br>
           時間切れになると自動的に採点画面へ移行します。
         </div>
-        <button class="btn btn-primary btn-block btn-lg" id="startBtn" disabled>回を選択してください</button>
+        <div class="mode-btns">
+          <button class="btn btn-primary btn-block btn-lg" id="startBtn" disabled>本試験モード（70問・75分）</button>
+          <button class="btn btn-secondary btn-block btn-lg" id="practiceBtn" disabled>演習モード（10問ずつ採点）</button>
+        </div>
       </div>
     </div>
     <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
@@ -363,12 +432,20 @@ function renderStart(){
       const startBtn = document.getElementById('startBtn');
       startBtn.disabled = false;
       const prog = progress[selectedRound];
-      startBtn.textContent = (prog && !prog.submitted) ? `第${selectedRound}回を再開する` : `第${selectedRound}回を開始する`;
+      startBtn.textContent = (prog && !prog.submitted) ? `第${selectedRound}回を再開する（本試験）` : `第${selectedRound}回を開始する（本試験 70問・75分）`;
+      const practiceBtn = document.getElementById('practiceBtn');
+      practiceBtn.disabled = false;
+      const pr = practice[selectedRound];
+      practiceBtn.textContent = (pr && !pr.finished) ? `第${selectedRound}回の演習を再開する（10問ずつ）` : `第${selectedRound}回を演習モードで開始する（10問ずつ採点）`;
     });
   });
   document.getElementById('startBtn').addEventListener('click', ()=>{
     if(!selectedRound) return;
     beginExam(selectedRound);
+  });
+  document.getElementById('practiceBtn').addEventListener('click', ()=>{
+    if(!selectedRound) return;
+    beginPractice(selectedRound);
   });
 }
 
@@ -712,8 +789,481 @@ function renderResults(result){
   document.onkeydown = null;
 }
 
+// ============ PRACTICE MODE (10問ずつ採点) ============
+function loadPractice(){
+  try{ return JSON.parse(_safeGetItem(PRACTICE_KEY) || '{}'); }catch(e){ return {}; }
+}
+function savePracticeAll(all){
+  _safeSetItem(PRACTICE_KEY, JSON.stringify(all));
+}
+function clearPractice(round){
+  const all = loadPractice();
+  delete all[round];
+  savePracticeAll(all);
+}
+
+let pstate = null; // active practice state
+
+function persistPractice(){
+  const all = loadPractice();
+  all[pstate.round] = pstate;
+  savePracticeAll(all);
+}
+
+function blockRange(questions, block){
+  const start = block * BLOCK_SIZE;
+  return questions.slice(start, Math.min(start + BLOCK_SIZE, questions.length));
+}
+function blockCount(questions){
+  return Math.ceil(questions.length / BLOCK_SIZE);
+}
+function blockScore(questions, block){
+  const bq = blockRange(questions, block);
+  let correct = 0;
+  bq.forEach(q=>{ if(pstate.answers[q.number] === q.answer) correct++; });
+  return { correct, total: bq.length };
+}
+
+function beginPractice(round){
+  stopTimer();
+  const all = loadPractice();
+  const existing = all[round];
+  if(existing && !existing.finished){
+    pstate = existing;
+  } else {
+    pstate = {
+      round: round,
+      block: 0,          // 現在のブロック（0始まり）
+      idx: 0,            // ブロック内の問題位置
+      phase: 'answer',   // 'answer' | 'review' | 'summary' | 'retrySummary'
+      answers: {},       // qnum -> 'a'|'b'|'c'
+      blocksDone: 0,     // 現ラウンドで採点済みのブロック数
+      stage: 'main',     // 'main'（全問）| 'retry'（不正解のみ復習）
+      retryRound: 0,     // 復習ラウンド数
+      retryQnums: null,  // 復習対象の問題番号リスト
+      finished: false,
+      startedAt: Date.now()
+    };
+    all[round] = pstate;
+    savePracticeAll(all);
+  }
+  if(pstate.phase === 'review') renderBlockReview();
+  else if(pstate.phase === 'summary') renderPracticeSummary();
+  else if(pstate.phase === 'retrySummary') renderRetrySummary();
+  else renderPractice();
+}
+
+// 現在のラウンドで出題する問題リスト（復習中は不正解だった問題のみ）
+function practiceQuestions(){
+  const questions = QUESTION_BANK[pstate.round];
+  if(pstate.stage === 'retry' && pstate.retryQnums){
+    const byNum = {};
+    questions.forEach(q=>{ byNum[q.number] = q; });
+    return pstate.retryQnums.map(n=> byNum[n]);
+  }
+  return questions;
+}
+
+function renderPractice(){
+  const questions = practiceQuestions();
+  const blocks = blockCount(questions);
+  const bq = blockRange(questions, pstate.block);
+  const app = document.getElementById('app');
+  const title = pstate.stage === 'retry'
+    ? `第${pstate.round}回 復習ラウンド${pstate.retryRound}（不正解のみ ${questions.length}問）`
+    : `第${pstate.round}回 演習モード（10問ずつ採点）`;
+
+  app.innerHTML = `
+    <div class="examhead">
+      <div class="left">
+        <div class="title">${title}</div>
+        <div class="qpos" id="qposLabel"></div>
+      </div>
+      <div class="right">
+        <button class="btn btn-secondary" id="quitPracticeBtn">中断して戻る</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="examcol">
+        <div class="qcard" id="qcard"></div>
+        <div class="navbtns">
+          <button class="btn btn-secondary" id="prevBtn">← 前の問題</button>
+          <button class="btn btn-primary" id="nextBtn">次の問題 →</button>
+        </div>
+      </div>
+      <div class="navcol">
+        <div class="progresswrap">
+          <h3>ブロック ${pstate.block+1} / ${blocks}</h3>
+          <div class="progressbar"><div id="progressFill" style="width:0%"></div></div>
+          <div class="progresslabel" id="progressLabel"></div>
+        </div>
+        <h3>このブロックの問題</h3>
+        <div class="legend">
+          <span><i class="dot answered"></i>解答済み</span>
+          <span><i class="dot unanswered"></i>未解答</span>
+        </div>
+        <div class="palette" id="palette"></div>
+        <div class="submitwrap">
+          <button class="btn btn-danger btn-block" id="gradeBlockBtn">この${bq.length}問を採点する</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('prevBtn').addEventListener('click', ()=> pNavigate(-1));
+  document.getElementById('nextBtn').addEventListener('click', ()=> pNavigate(1));
+  document.getElementById('quitPracticeBtn').addEventListener('click', ()=>{ persistPractice(); renderStart(); });
+  document.getElementById('gradeBlockBtn').addEventListener('click', confirmGradeBlock);
+
+  document.onkeydown = (e)=>{
+    if(!pstate || pstate.phase !== 'answer') return;
+    if(e.key === 'ArrowRight') pNavigate(1);
+    if(e.key === 'ArrowLeft') pNavigate(-1);
+    if(['a','b','c','A','B','C'].includes(e.key)) pSelectChoice(e.key.toLowerCase());
+  };
+
+  renderPracticeQuestion();
+  renderPracticePalette();
+}
+
+function renderPracticeQuestion(){
+  const questions = practiceQuestions();
+  const bq = blockRange(questions, pstate.block);
+  const q = bq[pstate.idx];
+  const globalNo = pstate.block*BLOCK_SIZE + pstate.idx + 1;
+  document.getElementById('qposLabel').textContent = `問題 ${globalNo} / ${questions.length}`;
+
+  const selected = pstate.answers[q.number];
+  const order = ['a','b','c'];
+  const choicesHtml = order.map(letter=>{
+    const sel = selected === letter ? 'selected' : '';
+    return `
+      <label class="choice ${sel}" data-letter="${letter}">
+        <input type="radio" name="choice" value="${letter}">
+        <span class="letter">${letter.toUpperCase()}</span>
+        <span class="body">${q.choices[letter]}</span>
+      </label>`;
+  }).join('');
+
+  document.getElementById('qcard').innerHTML = `
+    <div class="qnum-badge">問題 ${q.number}</div>
+    <p class="qtext">${q.question}</p>
+    <div class="choices">${choicesHtml}</div>
+  `;
+
+  document.querySelectorAll('.choice').forEach(el=>{
+    el.addEventListener('click', ()=> pSelectChoice(el.dataset.letter));
+  });
+
+  document.getElementById('prevBtn').disabled = pstate.idx === 0;
+  const nextBtn = document.getElementById('nextBtn');
+  nextBtn.textContent = pstate.idx === bq.length-1 ? '最後の問題です' : '次の問題 →';
+
+  const answeredCount = bq.filter(x=> pstate.answers[x.number] !== undefined).length;
+  document.getElementById('progressFill').style.width = (answeredCount/bq.length*100)+'%';
+  document.getElementById('progressLabel').textContent = `${answeredCount} / ${bq.length} 問 解答済み`;
+}
+
+function pSelectChoice(letter){
+  const bq = blockRange(practiceQuestions(), pstate.block);
+  pstate.answers[bq[pstate.idx].number] = letter;
+  persistPractice();
+  renderPracticeQuestion();
+  renderPracticePalette();
+}
+
+function pNavigate(delta){
+  const bq = blockRange(practiceQuestions(), pstate.block);
+  const ni = pstate.idx + delta;
+  if(ni < 0 || ni >= bq.length) return;
+  pstate.idx = ni;
+  persistPractice();
+  renderPracticeQuestion();
+  renderPracticePalette();
+}
+
+function renderPracticePalette(){
+  const bq = blockRange(practiceQuestions(), pstate.block);
+  const palette = document.getElementById('palette');
+  palette.innerHTML = bq.map((q, i)=>{
+    let cls = 'pnode';
+    if(pstate.answers[q.number] !== undefined) cls += ' answered';
+    if(i === pstate.idx) cls += ' current';
+    return `<div class="${cls}" data-idx="${i}">${pstate.block*BLOCK_SIZE + i + 1}</div>`;
+  }).join('');
+  palette.querySelectorAll('.pnode').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      pstate.idx = parseInt(el.dataset.idx, 10);
+      persistPractice();
+      renderPracticeQuestion();
+      renderPracticePalette();
+    });
+  });
+}
+
+function confirmGradeBlock(){
+  const bq = blockRange(practiceQuestions(), pstate.block);
+  const unanswered = bq.filter(q=> pstate.answers[q.number] === undefined).length;
+  if(unanswered === 0){ gradeBlock(); return; }
+  const app = document.getElementById('app');
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>採点しますか？</h3>
+      <p>未解答の問題が ${unanswered} 問あります。<br>採点するとこのブロックの回答は確定し、修正できません。</p>
+      <div class="modalbtns">
+        <button class="btn btn-secondary" id="cancelGrade">戻る</button>
+        <button class="btn btn-danger" id="confirmGradeBtn">採点する</button>
+      </div>
+    </div>
+  `;
+  app.appendChild(overlay);
+  document.getElementById('cancelGrade').addEventListener('click', ()=> overlay.remove());
+  document.getElementById('confirmGradeBtn').addEventListener('click', ()=>{ overlay.remove(); gradeBlock(); });
+}
+
+function gradeBlock(){
+  pstate.phase = 'review';
+  pstate.blocksDone = pstate.block + 1;
+  persistPractice();
+  renderBlockReview();
+}
+
+// 見直しリスト（review-item）のHTMLを生成する（演習モード用）
+function practiceReviewItemsHtml(qs){
+  return qs.map(q=>{
+    const picked = pstate.answers[q.number] !== undefined ? pstate.answers[q.number] : null;
+    const skipped = picked === null;
+    const isCorrect = picked === q.answer;
+    const tag = skipped ? '<span class="tag skip">未解答</span>' : (isCorrect ? '<span class="tag correct">正解</span>' : '<span class="tag wrong">不正解</span>');
+    const order = ['a','b','c'];
+    const choicesHtml = order.map(letter=>{
+      let cls = 'rchoice';
+      if(letter === q.answer) cls += ' iscorrect';
+      else if(letter === picked) cls += ' iswrongpick';
+      return `<div class="${cls}"><span class="rletter">${letter.toUpperCase()}</span><span>${q.choices[letter]}</span></div>`;
+    }).join('');
+    return `
+      <div class="review-item">
+        <div class="rhead"><span class="rqnum">問題 ${q.number}</span>${tag}</div>
+        <p class="rqtext">${q.question}</p>
+        ${choicesHtml}
+      </div>`;
+  }).join('');
+}
+
+function renderBlockReview(){
+  const questions = practiceQuestions();
+  const blocks = blockCount(questions);
+  const bq = blockRange(questions, pstate.block);
+  const score = blockScore(questions, pstate.block);
+  let cumCorrect = 0, cumTotal = 0;
+  for(let b=0; b<pstate.blocksDone; b++){
+    const s = blockScore(questions, b);
+    cumCorrect += s.correct; cumTotal += s.total;
+  }
+  const isLast = pstate.block === blocks - 1;
+  const isRetry = pstate.stage === 'retry';
+  const nextLen = isLast ? 0 : blockRange(questions, pstate.block+1).length;
+  const nextLabel = isLast
+    ? (isRetry ? '復習結果を見る →' : '最終結果を見る →')
+    : `次の${nextLen}問へ進む →`;
+  const app = document.getElementById('app');
+
+  app.innerHTML = `
+    <div class="result-wrap">
+      <div class="top-actions">
+        <button class="btn btn-secondary" id="backHomeBtn">← 中断して戻る</button>
+        <button class="btn btn-primary" id="nextBlockBtn">${nextLabel}</button>
+      </div>
+      <div class="result-banner neutral">
+        <div class="result-score">${score.correct}/${score.total}</div>
+        <div class="result-meta">
+          <h2>ブロック ${pstate.block+1} / ${blocks} の結果</h2>
+          <p>${isRetry ? `第${pstate.round}回 復習ラウンド${pstate.retryRound}` : `第${pstate.round}回 演習モード`}・ここまでの累計 ${cumCorrect}/${cumTotal} 問正解</p>
+        </div>
+      </div>
+      <div id="reviewList">${practiceReviewItemsHtml(bq)}</div>
+    </div>
+    <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
+  `;
+
+  document.getElementById('backHomeBtn').addEventListener('click', ()=>{ persistPractice(); renderStart(); });
+  document.getElementById('nextBlockBtn').addEventListener('click', ()=>{
+    if(isLast){
+      if(isRetry) renderRetrySummary();
+      else renderPracticeSummary();
+    } else {
+      pstate.block++;
+      pstate.idx = 0;
+      pstate.phase = 'answer';
+      persistPractice();
+      renderPractice();
+    }
+  });
+  document.onkeydown = null;
+}
+
+function renderPracticeSummary(){
+  const questions = QUESTION_BANK[pstate.round];
+  const blocks = blockCount(questions);
+  let totalCorrect = 0;
+  const blockRows = [];
+  for(let b=0; b<blocks; b++){
+    const s = blockScore(questions, b);
+    totalCorrect += s.correct;
+    blockRows.push(`<div class="rchoice"><span class="rletter">${b+1}</span><span>問題 ${b*BLOCK_SIZE+1}〜${Math.min((b+1)*BLOCK_SIZE, questions.length)}： ${s.correct} / ${s.total} 問正解</span></div>`);
+  }
+  const ratio = Math.round(totalCorrect/questions.length*100);
+  const passed = totalCorrect/questions.length >= PASS_RATIO;
+
+  let currentFilter = 'all';
+  const wrongQs = questions.filter(q=> pstate.answers[q.number] !== q.answer);
+  const allCorrect = wrongQs.length === 0;
+  pstate.phase = 'summary';
+  if(allCorrect) pstate.finished = true;
+  persistPractice();
+  const app = document.getElementById('app');
+
+  app.innerHTML = `
+    <div class="result-wrap">
+      <div class="top-actions">
+        <button class="btn btn-secondary" id="backHomeBtn">← 回選択に戻る</button>
+        <button class="btn btn-secondary" id="retryPracticeBtn">この回をもう一度演習する</button>
+        ${allCorrect ? '' : `<button class="btn btn-primary" id="reviewWrongBtn">不正解の${wrongQs.length}問だけ復習する →</button>`}
+      </div>
+      <div class="result-banner ${passed?'pass':'fail'}">
+        <div class="result-score">${totalCorrect}/${questions.length}</div>
+        <div class="result-meta">
+          <h2>${allCorrect ? '全問正解！ 完全制覇です' : `演習終了（正答率 ${ratio}%）`}</h2>
+          <p>第${pstate.round}回 演習モード・${allCorrect ? '1周目で全問クリアしました' : '「不正解だけ復習」を繰り返して全問正解を目指しましょう（参考：本試験の合格基準は正答率90%）'}</p>
+        </div>
+      </div>
+      <div class="review-item">
+        <div class="rhead"><span class="rqnum">ブロック別成績</span></div>
+        ${blockRows.join('')}
+      </div>
+      <div class="filterbar">
+        <button class="filterbtn active" data-f="all">すべて（${questions.length}）</button>
+        <button class="filterbtn" data-f="wrong">不正解・未解答（${wrongQs.length}）</button>
+      </div>
+      <div id="reviewList"></div>
+    </div>
+    <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
+  `;
+
+  function renderList(){
+    const list = currentFilter === 'wrong' ? wrongQs : questions;
+    document.getElementById('reviewList').innerHTML = practiceReviewItemsHtml(list) || '<p style="color:#9aa1ac;font-size:14px;">該当する問題はありません。</p>';
+  }
+  renderList();
+
+  document.querySelectorAll('.filterbtn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('.filterbtn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFilter = btn.dataset.f;
+      renderList();
+    });
+  });
+  document.getElementById('backHomeBtn').addEventListener('click', ()=>{
+    if(allCorrect) clearPractice(pstate.round);
+    renderStart();
+  });
+  document.getElementById('retryPracticeBtn').addEventListener('click', ()=>{
+    const r = pstate.round;
+    clearPractice(r);
+    beginPractice(r);
+  });
+  const reviewWrongBtn = document.getElementById('reviewWrongBtn');
+  if(reviewWrongBtn){
+    reviewWrongBtn.addEventListener('click', ()=> beginRetryRound(wrongQs.map(q=>q.number)));
+  }
+  document.onkeydown = null;
+}
+
+// ============ 復習ラウンド（不正解のみを繰り返し、全問正解を目指す） ============
+function beginRetryRound(qnums){
+  pstate.stage = 'retry';
+  pstate.retryRound = (pstate.retryRound || 0) + 1;
+  pstate.retryQnums = qnums;
+  qnums.forEach(n=>{ delete pstate.answers[n]; }); // 復習対象は解答し直し
+  pstate.block = 0;
+  pstate.idx = 0;
+  pstate.blocksDone = 0;
+  pstate.phase = 'answer';
+  persistPractice();
+  renderPractice();
+}
+
+function renderRetrySummary(){
+  const questions = practiceQuestions();
+  let correct = 0;
+  questions.forEach(q=>{ if(pstate.answers[q.number] === q.answer) correct++; });
+  const wrongQs = questions.filter(q=> pstate.answers[q.number] !== q.answer);
+  const cleared = wrongQs.length === 0;
+  pstate.phase = 'retrySummary';
+  if(cleared) pstate.finished = true;
+  persistPractice();
+  const app = document.getElementById('app');
+
+  if(cleared){
+    app.innerHTML = `
+      <div class="result-wrap">
+        <div class="top-actions">
+          <button class="btn btn-secondary" id="backHomeBtn">← 回選択に戻る</button>
+          <button class="btn btn-primary" id="retryPracticeBtn">この回をもう一度演習する</button>
+        </div>
+        <div class="result-banner pass">
+          <div class="result-score">${correct}/${questions.length}</div>
+          <div class="result-meta">
+            <h2>🎉 全問正解！ 完全制覇です</h2>
+            <p>第${pstate.round}回・復習ラウンド${pstate.retryRound}で残っていた${questions.length}問をすべてクリアしました。</p>
+          </div>
+        </div>
+        <div id="reviewList">${practiceReviewItemsHtml(questions)}</div>
+      </div>
+      <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
+    `;
+    document.getElementById('backHomeBtn').addEventListener('click', ()=>{ clearPractice(pstate.round); renderStart(); });
+    document.getElementById('retryPracticeBtn').addEventListener('click', ()=>{
+      const r = pstate.round;
+      clearPractice(r);
+      beginPractice(r);
+    });
+    document.onkeydown = null;
+    return;
+  }
+
+  app.innerHTML = `
+    <div class="result-wrap">
+      <div class="top-actions">
+        <button class="btn btn-secondary" id="backHomeBtn">← 中断して戻る</button>
+        <button class="btn btn-primary" id="nextRetryBtn">不正解の${wrongQs.length}問をもう一度復習する →</button>
+      </div>
+      <div class="result-banner neutral">
+        <div class="result-score">${correct}/${questions.length}</div>
+        <div class="result-meta">
+          <h2>復習ラウンド${pstate.retryRound} の結果</h2>
+          <p>第${pstate.round}回・あと${wrongQs.length}問で完全制覇です。不正解だった問題だけをもう一度解き直しましょう。</p>
+        </div>
+      </div>
+      <div id="reviewList">${practiceReviewItemsHtml(wrongQs)}</div>
+    </div>
+    <footer class="credit">学習用模擬演習ツール（本番のCBT試験とは別物です）</footer>
+  `;
+  document.getElementById('backHomeBtn').addEventListener('click', ()=>{ persistPractice(); renderStart(); });
+  document.getElementById('nextRetryBtn').addEventListener('click', ()=> beginRetryRound(wrongQs.map(q=>q.number)));
+  document.onkeydown = null;
+}
+
 // ============ INIT ============
-renderStart();
+if(isAuthed()){
+  renderStart();
+} else {
+  renderLogin();
+}
 </script>
 </body>
 </html>
